@@ -1,0 +1,132 @@
+#Databricks cells to predict click ad conversion using regression
+#In this project I worked with a data set, indicating whether or not a particular internet user clicked on an Advertisement. 
+#I created a model that will predict whether or not they will click on an ad based off the features of that user.
+#Project is from https://projectsbasedlearning.com/apache-spark-machine-learning/predict-ads-click-practice-data-analysis-and-logistic-regression-prediction/ 
+val csv = spark.read.option("inferSchema","true").option("header", "true").csv("/FileStore/tables/advertising.csv")
+#
+csv.show()
+#
+%scala
+
+csv.printSchema()
+#
+%scala
+
+csv.select("Daily Time Spent on Site", "Age", "Area Income", "Daily Internet Usage", "Ad Topic Line", "City", "Male", "Country", "Timestamp", "Clicked on Ad" ).describe().show()
+#
+%scala
+
+csv.createOrReplaceTempView("AdsData");
+#
+%sql
+
+select * from AdsData;
+#
+%sql
+
+select Age from AdsData
+#
+%scala
+
+var StringfeatureCol = Array("Ad Topic Line", "City", "Country", "Timestamp");
+#
+%scala
+
+import org.apache.spark.ml.feature.StringIndexer
+
+val df = spark.createDataFrame(
+  Seq((0, "a"), (1, "b"), (2, "c"), (3, "a"), (4, "b"), (5, "c"))
+).toDF("id", "category")
+
+df.show()
+#
+%scala
+
+val indexer = new StringIndexer()
+  .setInputCol("category")
+  .setOutputCol("categoryIndex")
+
+val indexed = indexer.fit(df).transform(df)
+
+indexed.show()
+#
+%scala
+
+import org.apache.spark.ml.attribute.Attribute
+import org.apache.spark.ml.feature.{IndexToString, StringIndexer}
+import org.apache.spark.ml.{Pipeline, PipelineModel}
+
+val indexers = StringfeatureCol.map { colName =>
+  new StringIndexer().setInputCol(colName).setHandleInvalid("skip").setOutputCol(colName + "_indexed")
+}
+
+val pipeline = new Pipeline()
+                    .setStages(indexers)      
+
+val AdsFinalDF = pipeline.fit(csv).transform(csv)
+#
+%scala
+
+AdsFinalDF.printSchema()
+#
+%scala
+
+val splits = AdsFinalDF.randomSplit(Array(0.7, 0.3))
+val train = splits(0)
+val test = splits(1)
+val train_rows = train.count()
+val test_rows = test.count()
+println("Training Rows: " + train_rows + " Testing Rows: " + test_rows)
+#
+%scala
+
+import org.apache.spark.ml.feature.VectorAssembler
+
+val assembler = new VectorAssembler().setInputCols(Array("Daily Time Spent on Site", "Age", "Area Income", "Daily Internet Usage", "Ad Topic Line_indexed", "City_indexed", "Male", "Country_indexed", "Timestamp_indexed")).setOutputCol("features")
+
+val training = assembler.transform(train).select($"features", $"Clicked on Ad".alias("label"))
+
+training.show(false)
+#
+%scala
+import org.apache.spark.ml.classification.LogisticRegression
+
+val lr = new LogisticRegression().setLabelCol("label").setFeaturesCol("features").setMaxIter(10).setRegParam(0.3)
+val model = lr.fit(training)
+println ("Model trained!")
+#
+%scala
+
+val testing = assembler.transform(test).select($"features", $"Clicked on Ad".alias("trueLabel"))
+testing.show(false)
+#
+%scala
+
+val prediction = model.transform(testing)
+val predicted = prediction.select("features", "prediction", "probability", "trueLabel")
+predicted.show()
+#
+%scala
+
+import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
+
+
+val evaluator = new MulticlassClassificationEvaluator()
+  .setLabelCol("trueLabel")
+  .setPredictionCol("prediction")
+  .setMetricName("accuracy")
+val accuracy = evaluator.evaluate(prediction)
+#
+val tp = predicted.filter("prediction == 1 AND truelabel == 1").count().toFloat
+val fp = predicted.filter("prediction == 1 AND truelabel == 0").count().toFloat
+val tn = predicted.filter("prediction == 0 AND truelabel == 0").count().toFloat
+val fn = predicted.filter("prediction == 0 AND truelabel == 1").count().toFloat
+val metrics = spark.createDataFrame(Seq(
+ ("TP", tp),
+ ("FP", fp),
+ ("TN", tn),
+ ("FN", fn),
+ ("Precision", tp / (tp + fp)),
+ ("Recall", tp / (tp + fn)))).toDF("metric", "value")
+metrics.show()
+#
